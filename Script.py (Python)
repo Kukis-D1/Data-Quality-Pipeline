@@ -1,0 +1,176 @@
+"""
+Data Pipeline Script
+----------------------------
+Supports:
+- Pure Python execution
+- CI/CD testing
+- Airflow DAG
+- Prefect Flow
+"""
+
+# =========================
+# 1. CORE PIPELINE LOGIC
+# =========================
+
+import pandas as pd
+import datetime
+from typing import Dict, Callable
+
+USER_EMAIL_MAP = {
+    "Sales": "sales_lead@gmail.com",
+    "Engineering": "tech_lead@gmail.com",
+    "HR": "hr_director@gmail.com",
+}
+
+
+# ---------- Ingest ----------
+def ingest_data() -> pd.DataFrame:
+    data = {
+        "ID": [101, 102, 103, 104, 105],
+        " Department ": [" Sales ", "Engineering", "Sales", "HR", "Engineering"],
+        "Value": ["$1000", "$500", None, "$200", "$500"],
+        "Status": ["Pending", "Complete", "Pending", "Complete", "Complete"],
+    }
+    return pd.DataFrame(data)
+
+# ---------- Clean ----------
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+    df = df.drop_duplicates()
+    df = df.dropna(subset=["value"])
+
+    df["value"] = (
+        df["value"]
+        .astype(str)
+        .str.replace("$", "", regex=False)
+        .astype(float)
+    )
+
+    df["department"] = df["department"].str.strip()
+    return df
+
+# ---------- Process ----------
+def process_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["processed_at"] = datetime.datetime.now(datetime.UTC)
+    df["priority"] = df["value"].apply(
+        lambda x: "High" if x > 400 else "Standard"
+    )
+    return df
+
+# ---------- Route ----------
+def route_and_send(
+    df: pd.DataFrame,
+    email_map: Dict[str, str],
+    send_func: Callable,
+) -> list:
+    results = []
+
+    for department, chunk in df.groupby("department"):
+        email = email_map.get(department)
+        if email:
+            send_func(email, department, chunk)
+            results.append((department, email, len(chunk)))
+
+    return results
+
+
+# =========================
+# 2. SIDE EFFECTS (EMAIL)
+# =========================
+
+def send_email_notification(to_email, department, dataframe):
+    # Mockable side effect
+    print(
+        f"[EMAIL] {department}: {len(dataframe)} rows -> {to_email}"
+    )
+
+
+# =========================
+# 3. PURE PYTHON ENTRYPOINT
+# =========================
+
+def run_pipeline():
+    df = ingest_data()
+    df = clean_data(df)
+    df = process_data(df)
+    return route_and_send(
+        df, USER_EMAIL_MAP, send_email_notification
+    )
+
+
+# =========================
+# 4. AIRFLOW DAG
+# =========================
+
+def build_airflow_dag():
+    from airflow import DAG
+    from airflow.operators.python import PythonOperator
+
+    def airflow_run():
+        run_pipeline()
+
+    with DAG(
+        dag_id="unified_data_email_pipeline",
+        start_date=datetime.datetime(2024, 1, 1),
+        schedule="@daily",
+        catchup=False,
+    ) as dag:
+
+        run = PythonOperator(
+            task_id="run_pipeline",
+            python_callable=airflow_run,
+        )
+
+    return dag
+
+
+# Airflow auto-discovery
+try:
+    airflow_dag = build_airflow_dag()
+except Exception:
+    airflow_dag = None
+
+
+# =========================
+# 5. PREFECT FLOW
+# =========================
+
+def build_prefect_flow():
+    from prefect import flow, task
+
+    @task
+    def ingest():
+        return ingest_data()
+
+    @task
+    def clean(df):
+        return clean_data(df)
+
+    @task
+    def process(df):
+        return process_data(df)
+
+    @task
+    def route(df):
+        route_and_send(df, USER_EMAIL_MAP, send_email_notification)
+
+    @flow(name="unified-data-email-pipeline")
+    def pipeline_flow():
+        df = ingest()
+        df = clean(df)
+        df = process(df)
+        route(df)
+
+    return pipeline_flow
+
+
+# =========================
+# 6. CLI EXECUTION
+# =========================
+
+if __name__ == "__main__":
+    print("Running unified pipeline locally...")
+    run_pipeline()
